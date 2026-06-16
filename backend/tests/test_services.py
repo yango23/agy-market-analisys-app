@@ -41,6 +41,7 @@ class TestAlertService(unittest.TestCase):
     def setUp(self):
         self.alerts = AlertService()
         self.alerts.clear_all_alerts() # clear defaults
+        self.alerts.clear_trigger_logs() # clear logs
         
     def test_create_and_delete_alert(self):
         alert = self.alerts.create_alert("BTC", "price", "above", 80000.0)
@@ -61,8 +62,10 @@ class TestAlertService(unittest.TestCase):
         # Test trigger above
         triggers = self.alerts.evaluate_rules("BTC", current_price=66000.0, current_rsi=50.0)
         self.assertEqual(len(triggers), 1)
-        self.assertEqual(triggers[0]["alert_id"], alert_price_above["id"])
-        self.assertEqual(alert_price_above["status"], "triggered")
+        # Re-fetch alert status from database
+        all_alerts = self.alerts.get_all_alerts()
+        fetched_alert = next(a for a in all_alerts if a["id"] == alert_price_above["id"])
+        self.assertEqual(fetched_alert["status"], "triggered")
         
         # Test log entry
         logs = self.alerts.get_trigger_logs()

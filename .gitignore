@@ -44,3 +44,8 @@ Thumbs.db
 # App Local Secrets
 .env
 *.log
+
+# SQLite database files
+*.db
+*.sqlite
+*.sqlite3

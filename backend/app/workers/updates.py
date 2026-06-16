@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Callable, Optional, List
 from datetime import datetime
 
 from backend.app.clients.coingecko import CoinGeckoClient
@@ -11,17 +11,23 @@ from backend.app.services.alerts import AlertService
 logger = logging.getLogger(__name__)
 
 # Global cache to share market data between background worker and FastAPI routes
-# This prevents hitting CoinGecko API rate limits on every user refresh
 GLOBAL_MARKET_CACHE: Dict[str, Dict[str, Any]] = {}
 
 class BackgroundWorker:
-    def __init__(self, coingecko: CoinGeckoClient, cryptopanic: CryptoPanicClient, market_service: MarketService, alert_service: AlertService):
+    def __init__(
+        self, 
+        coingecko: CoinGeckoClient, 
+        cryptopanic: CryptoPanicClient, 
+        market_service: MarketService, 
+        alert_service: AlertService,
+        on_alert_triggered: Optional[Callable[[List[Dict[str, Any]]], Any]] = None
+    ):
         self.coingecko = coingecko
         self.cryptopanic = cryptopanic
         self.market = market_service
         self.alerts = alert_service
+        self.on_alert_triggered = on_alert_triggered
         self.is_running = False
-        self.tickers = ["BTC", "ETH", "SOL", "MATIC", "TON"]
         self.poll_interval = 30 # seconds
 
     async def start(self):
@@ -49,7 +55,18 @@ class BackgroundWorker:
     async def tick(self):
         logger.info(f"Background worker tick started at {datetime.now()}")
         
-        for ticker in self.tickers:
+        # Dynamically fetch tickers from SQLite database
+        tickers_list = self.alerts.get_all_tickers()
+        active_tickers = [t["symbol"] for t in tickers_list]
+        
+        # Clean up cache for tickers that are no longer tracked
+        cache_keys = list(GLOBAL_MARKET_CACHE.keys())
+        for key in cache_keys:
+            if key not in active_tickers:
+                del GLOBAL_MARKET_CACHE[key]
+                logger.info(f"Removed cache for untracked ticker: {key}")
+        
+        for ticker in active_tickers:
             try:
                 # 1. Fetch live metrics (Price, volume, Cap)
                 live_data = await self.coingecko.get_market_data(ticker)
@@ -70,9 +87,6 @@ class BackgroundWorker:
                 levels = self.market.calculate_support_resistance(ohlc)
                 
                 latest_rsi = rsi_vals[-1] if rsi_vals else 50.0
-                latest_macd = macd_data["macd_line"][-1] if macd_data["macd_line"] else 0.0
-                latest_signal = macd_data["signal_line"][-1] if macd_data["signal_line"] else 0.0
-                latest_hist = macd_data["histogram"][-1] if macd_data["histogram"] else 0.0
                 
                 # 5. Evaluate alert rules
                 newly_triggered = self.alerts.evaluate_rules(
@@ -80,6 +94,13 @@ class BackgroundWorker:
                     current_price=live_data["price"],
                     current_rsi=latest_rsi
                 )
+                
+                # If alerts were triggered, execute callback (e.g. broadcast to WebSockets)
+                if newly_triggered and self.on_alert_triggered:
+                    if asyncio.iscoroutinefunction(self.on_alert_triggered):
+                        await self.on_alert_triggered(newly_triggered)
+                    else:
+                        self.on_alert_triggered(newly_triggered)
                 
                 # 6. Fetch news (CryptoPanic)
                 news = await self.cryptopanic.get_news(ticker)

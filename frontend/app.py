@@ -79,7 +79,7 @@ st.markdown("""
         border: 1px solid rgba(255, 255, 255, 0.15);
     }
 </style>
-""", unsafe_value=True)
+""", unsafe_allow_html=True)
 
 API_BASE_URL = "http://localhost:8000/api"
 
@@ -87,7 +87,7 @@ API_BASE_URL = "http://localhost:8000/api"
 if "shown_toasts" not in st.session_state:
     st.session_state.shown_toasts = set()
 
-# Helper function to fetch data from API
+# Helper functions to communicate with API
 def fetch_api_data(endpoint: str) -> dict:
     try:
         response = httpx.get(f"{API_BASE_URL}/{endpoint}", timeout=5.0)
@@ -95,7 +95,6 @@ def fetch_api_data(endpoint: str) -> dict:
             return response.json()
         return {}
     except Exception as e:
-        st.error(f"Could not connect to Aetheris Backend API: {e}")
         return {}
 
 def send_api_post(endpoint: str, data: dict) -> bool:
@@ -118,21 +117,60 @@ st.caption("Real-Time Analytics, Mathematical Levels Support/Resistance & News T
 
 # Sidebar navigation & configuration
 st.sidebar.image("https://images.unsplash.com/photo-1621761191319-c6fb62004040?auto=format&fit=crop&w=400&q=80", caption="Aetheris Analytics Terminal", use_column_width=True)
-st.sidebar.title("Terminal Panel")
+
+# Fetch tracked tickers from SQLite
+tickers_data = fetch_api_data("tickers")
+if tickers_data:
+    available_tickers = [t["symbol"] for t in tickers_data]
+    ticker_names = {t["symbol"]: t["name"] for t in tickers_data}
+else:
+    available_tickers = ["BTC", "ETH", "SOL", "MATIC", "TON"]
+    ticker_names = {"BTC": "Bitcoin", "ETH": "Ethereum", "SOL": "Solana", "MATIC": "Polygon", "TON": "The Open Network"}
 
 # Coin Ticker Selector
-available_tickers = ["BTC", "ETH", "SOL", "MATIC", "TON"]
 selected_ticker = st.sidebar.selectbox(
     "Select Crypto Asset",
     options=available_tickers,
     index=0
 )
 
-# Refresh interval
+# Refresh interval settings
 auto_refresh = st.sidebar.checkbox("Enable Auto Refresh (10s)", value=True)
-if auto_refresh:
-    # Set sleep and rerun
-    st.sidebar.caption("Auto-refresh is active.")
+
+# --- TICKERS DYNAMIC MANAGEMENT IN SIDEBAR ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("Manage Monitored Assets")
+
+# Add Ticker Form
+with st.sidebar.form("add_ticker_form", clear_on_submit=True):
+    new_symbol = st.text_input("Token Symbol (e.g. LINK, ADA)").upper().strip()
+    new_name = st.text_input("Token Name (e.g. Chainlink)")
+    add_btn = st.form_submit_button("Add Asset")
+    
+    if add_btn:
+        if new_symbol and new_name:
+            success = send_api_post("tickers", {"symbol": new_symbol, "name": new_name})
+            if success:
+                st.sidebar.success(f"Added {new_symbol}!")
+                st.rerun()
+            else:
+                st.sidebar.error("Already exists or failed.")
+        else:
+            st.sidebar.warning("Fill in all fields.")
+
+# Delete Ticker Selector
+if len(available_tickers) > 1:
+    ticker_to_delete = st.sidebar.selectbox(
+        "Delete Asset",
+        options=[t for t in available_tickers if t != selected_ticker],
+        index=0
+    )
+    if st.sidebar.button("Remove Selected Asset", type="primary"):
+        if send_api_delete(f"tickers/{ticker_to_delete}"):
+            st.sidebar.success(f"Removed {ticker_to_delete}!")
+            st.rerun()
+        else:
+            st.sidebar.error("Failed to remove.")
 
 # Fetch data for selected coin
 market_data = fetch_api_data(f"market/{selected_ticker}")
@@ -148,7 +186,7 @@ if logs:
 
 # --- DASHBOARD METRICS ---
 if market_data:
-    st.subheader(f"📊 {selected_ticker} Market Summary")
+    st.subheader(f"📊 {selected_ticker} ({ticker_names.get(selected_ticker, '')}) Market Summary")
     
     col1, col2, col3, col4 = st.columns(4)
     
@@ -183,8 +221,6 @@ if market_data:
             df = pd.DataFrame(ohlc, columns=["timestamp", "open", "high", "low", "close"])
             df["time"] = pd.to_datetime(df["timestamp"], unit="s")
             
-            # Subplots: Row 1 = Price + BB + Support/Resistance, Row 2 = RSI or MACD
-            # We'll create a 2-row layout using Plotly
             fig = make_subplots(
                 rows=2, cols=1, 
                 shared_xaxes=True,
@@ -192,16 +228,8 @@ if market_data:
                 row_heights=[0.7, 0.3]
             )
             
-            # 1. Candlestick
             fig.add_trace(
-                px.colors.qualitative.Plotly, # Dummy placeholder
-                row=1, col=1
-            )
-            # Replace placeholder with real traces
-            fig.data = [] # clear
-            
-            fig.add_trace(
-                pg_candle := go.Candlestick(
+                go.Candlestick(
                     x=df["time"],
                     open=df["open"],
                     high=df["high"],
@@ -314,11 +342,10 @@ if market_data:
                 alert_metric = st.selectbox("Trigger Metric", ["price", "rsi"])
                 alert_condition = st.selectbox("Condition", ["above", "below"])
                 
-                # Pre-populate threshold values to assist user
                 default_val = price if alert_metric == "price" else 50.0
                 alert_val = st.number_input("Threshold Value", value=float(default_val), format="%.4f")
                 
-                submitted = st.form_submit_form = st.form_submit_button("Deploy Trigger")
+                submitted = st.form_submit_button("Deploy Trigger")
                 if submitted:
                     success = send_api_post("alerts", {
                         "ticker": selected_ticker,
@@ -332,7 +359,6 @@ if market_data:
                     else:
                         st.error("Failed to deploy trigger.")
                         
-            # Button to clear all rules
             if st.button("Delete All Alert Rules", type="primary"):
                 if send_api_delete("alerts"):
                     st.success("All alert rules deleted.")
@@ -340,15 +366,12 @@ if market_data:
 
         with acol2:
             st.markdown("### Active Registry")
-            # Fetch rules
             rules = fetch_api_data("alerts")
             if rules:
                 df_rules = pd.DataFrame(rules)
-                # Filter for readability
                 df_rules_display = df_rules[["ticker", "metric", "condition", "value", "status", "id"]]
                 st.dataframe(df_rules_display, use_container_width=True)
                 
-                # Delete alert by ID input
                 del_id = st.text_input("Enter Alert ID to delete:")
                 if st.button("Delete Rule"):
                     if del_id:
@@ -361,7 +384,6 @@ if market_data:
                 st.info("No active alerts configured.")
                 
             st.markdown("### Log Feed")
-            # Fetch logs
             triggered_logs = fetch_api_data("alerts/logs")
             if triggered_logs:
                 if st.button("Clear Logs"):
@@ -379,7 +401,6 @@ if market_data:
         news_list = market_data.get("news", [])
         if news_list:
             for item in news_list:
-                # Add sentiment badge
                 sentiment = item.get("sentiment", "neutral").lower()
                 badge_html = f'<span class="badge-{sentiment}">{sentiment.upper()}</span>'
                 
