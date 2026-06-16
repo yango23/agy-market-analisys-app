@@ -137,8 +137,10 @@ class CoinGeckoClient:
                 response = await client.get(url, params=params)
                 if response.status_code == 200:
                     data = response.json()
-                    self.ohlc_cache[cache_key] = data
-                    return data
+                    # Convert CoinGecko timestamps (ms) to seconds (s)
+                    ohlc = [[float(item[0]) / 1000, float(item[1]), float(item[2]), float(item[3]), float(item[4])] for item in data]
+                    self.ohlc_cache[cache_key] = ohlc
+                    return ohlc
                 
                 logger.warning(f"CoinGecko OHLC returned status {response.status_code}. Initiating Binance Klines fallback...")
                 
