@@ -219,7 +219,11 @@ if market_data:
         if ohlc:
             # Prepare pandas Dataframe
             df = pd.DataFrame(ohlc, columns=["timestamp", "open", "high", "low", "close"])
-            df["time"] = pd.to_datetime(df["timestamp"], unit="s")
+            # Auto-detect if timestamp is in milliseconds and convert appropriately
+            if df["timestamp"].max() > 1e11:
+                df["time"] = pd.to_datetime(df["timestamp"], unit="ms")
+            else:
+                df["time"] = pd.to_datetime(df["timestamp"], unit="s")
             
             fig = make_subplots(
                 rows=2, cols=1, 
